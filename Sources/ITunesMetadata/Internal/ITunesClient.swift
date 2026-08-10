@@ -21,8 +21,11 @@ enum ITunesClient {
     /// The base host for the iTunes Search API.
     static let host = "https://itunes.apple.com"
 
-    /// A browser-like User-Agent. The RSS feeds (reviews/charts) return an empty
-    /// feed unless a browser-style agent is sent; the Search API is unaffected.
+    /// A browser-like User-Agent.
+    ///
+    /// The charts RSS feed returns an empty feed without one. It does not
+    /// revive the customer-reviews feed — that is retired outright, and no
+    /// agent string brings it back.
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
 
     /// Performs a GET against `host + path` and returns the decoded JSON object.

@@ -52,7 +52,55 @@ enum ITunesParser {
         )
     }
 
+    // MARK: - Apps
+
+    /// Parses a `software` / `mac-software` lookup result.
+    static func app(_ d: [String: Any]) -> AppStoreApp {
+        AppStoreApp(
+            id: intValue(d["trackId"]) ?? 0,
+            bundleID: nonEmpty(d["bundleId"]),
+            name: nonEmpty(d["trackName"]) ?? nonEmpty(d["trackCensoredName"]) ?? "",
+            kind: nonEmpty(d["kind"]),
+            url: nonEmpty(d["trackViewUrl"]),
+            seller: nonEmpty(d["sellerName"]) ?? nonEmpty(d["artistName"]),
+            sellerURL: nonEmpty(d["sellerUrl"]),
+            developerURL: nonEmpty(d["artistViewUrl"]),
+            version: nonEmpty(d["version"]),
+            currentVersionDate: isoDate(d["currentVersionReleaseDate"]),
+            releaseDate: isoDate(d["releaseDate"]),
+            releaseNotes: nonEmpty(d["releaseNotes"]),
+            rating: doubleValue(d["averageUserRating"]),
+            ratingCount: intValue(d["userRatingCount"]),
+            currentVersionRating: doubleValue(d["averageUserRatingForCurrentVersion"]),
+            currentVersionRatingCount: intValue(d["userRatingCountForCurrentVersion"]),
+            price: doubleValue(d["price"]),
+            formattedPrice: nonEmpty(d["formattedPrice"]),
+            currency: nonEmpty(d["currency"]),
+            genre: nonEmpty(d["primaryGenreName"]),
+            genres: strings(d["genres"]),
+            contentRating: nonEmpty(d["contentAdvisoryRating"]) ?? nonEmpty(d["trackContentRating"]),
+            // Apple sends this as a string, so `as? Int` alone returns nil.
+            fileSizeBytes: intValue(d["fileSizeBytes"]),
+            minimumOSVersion: nonEmpty(d["minimumOsVersion"]),
+            languages: strings(d["languageCodesISO2A"]),
+            description: nonEmpty(d["description"]),
+            artworkURL: nonEmpty(d["artworkUrl512"]) ?? nonEmpty(d["artworkUrl100"]) ?? nonEmpty(d["artworkUrl60"]),
+            screenshotURLs: strings(d["screenshotUrls"])
+        )
+    }
+
+    /// The `software` results in a lookup envelope, ignoring anything else.
+    static func appList(_ d: [String: Any]) -> [AppStoreApp] {
+        (d["results"] as? [[String: Any]] ?? [])
+            .filter { ($0["wrapperType"] as? String) == "software" }
+            .map(app)
+    }
+
     // MARK: - Helpers
+
+    private static func strings(_ value: Any?) -> [String] {
+        (value as? [String])?.filter { !$0.isEmpty } ?? []
+    }
 
     /// Returns the string if non-empty, else `nil`. Accepts non-string values as `nil`.
     private static func nonEmpty(_ value: Any?) -> String? {

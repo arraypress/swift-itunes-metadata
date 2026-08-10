@@ -29,11 +29,3 @@ public enum ITunesChart: String, Sendable {
     /// Top audiobooks.
     case topAudiobooks = "topaudiobooks"
 }
-
-/// The order in which App Store customer reviews are returned.
-public enum ITunesReviewSort: String, Sendable {
-    /// Newest first.
-    case mostRecent = "mostRecent"
-    /// Most-helpful first.
-    case mostHelpful = "mostHelpful"
-}

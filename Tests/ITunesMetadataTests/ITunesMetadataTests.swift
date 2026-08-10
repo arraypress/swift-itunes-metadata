@@ -153,20 +153,136 @@ final class ITunesMetadataTests: XCTestCase {
         }
     }
 
+    // MARK: - Media coverage
+
+    func testAllCasesOmitsTheRetiredMediaTypes() {
+        // Verified against the live API in August 2026: film and TV return
+        // zero results in every storefront, and a direct lookup of a known
+        // film ID comes back empty. Offering them as choices would hand a
+        // caller a guaranteed-empty answer that looks like a real one.
+        let raws = ITunesMedia.allCases.map(\.rawValue)
+        XCTAssertFalse(raws.contains("movie"))
+        XCTAssertFalse(raws.contains("tvShow"))
+    }
+
+    func testAllCasesKeepsEveryServedMediaType() {
+        let raws = Set(ITunesMedia.allCases.map(\.rawValue))
+        XCTAssertEqual(raws, ["music", "podcast", "ebook", "software", "audiobook", "musicVideo", "all"])
+    }
+
+    // MARK: - App parsing
+
+    func testParseApp() throws {
+        let app = ITunesParser.app(try json(Fixture.appLookup))
+        XCTAssertEqual(app.id, 904280696)
+        XCTAssertEqual(app.bundleID, "com.culturedcode.ThingsMac")
+        XCTAssertEqual(app.name, "Things 3")
+        XCTAssertEqual(app.version, "3.22.13")
+        XCTAssertEqual(app.seller, "Cultured Code GmbH & Co. KG")
+        XCTAssertEqual(app.formattedPrice, "$49.99")
+        XCTAssertEqual(app.price, 49.99)
+        XCTAssertEqual(app.genres, ["Productivity", "Business"])
+        XCTAssertEqual(app.minimumOSVersion, "10.15.0")
+        XCTAssertEqual(app.contentRating, "4+")
+        XCTAssertEqual(app.screenshotURLs.count, 2)
+        XCTAssertNotNil(app.currentVersionDate)
+        XCTAssertNotNil(app.releaseNotes)
+    }
+
+    func testFileSizeArrivesAsAStringAndIsParsed() throws {
+        // Apple sends `fileSizeBytes` as a string; `as? Int` alone yields nil.
+        XCTAssertEqual(ITunesParser.app(try json(Fixture.appLookup)).fileSizeBytes, 21_889_579)
+    }
+
+    func testRatingAcceptsBothIntAndDouble() throws {
+        // An unrated app reports integer 0; a rated one reports a float.
+        XCTAssertEqual(ITunesParser.app(try json(Fixture.appLookup)).rating, 0)
+        let rating = try XCTUnwrap(ITunesParser.app(try json(Fixture.ratedApp)).rating)
+        XCTAssertEqual(rating, 4.82, accuracy: 0.001)
+        XCTAssertEqual(ITunesParser.app(try json(Fixture.ratedApp)).ratingCount, 27_792)
+    }
+
+    func testZeroRatingIsAValueNotAnAbsence() throws {
+        // Mac App Store listings routinely report no ratings at all. Reporting
+        // that as "unknown" would misrepresent a real answer.
+        let app = ITunesParser.app(try json(Fixture.appLookup))
+        XCTAssertEqual(app.ratingCount, 0)
+        XCTAssertNotNil(app.rating)
+    }
+
+    func testMacAndFreeConveniences() throws {
+        let paid = ITunesParser.app(try json(Fixture.appLookup))
+        XCTAssertTrue(paid.isMac)
+        XCTAssertFalse(paid.isFree)
+        XCTAssertFalse(ITunesParser.app(try json(Fixture.ratedApp)).isMac)
+        XCTAssertTrue(ITunesParser.app(try json(Fixture.ratedApp)).isFree)
+    }
+
+    func testAppListIgnoresNonSoftwareResults() throws {
+        // A lookup can return the developer alongside the app.
+        let envelope = """
+            { "results": [ { "wrapperType": "artist", "artistName": "Cultured Code" },
+                           \(Fixture.appLookup) ] }
+            """
+        XCTAssertEqual(ITunesParser.appList(try json(envelope)).count, 1)
+    }
+
     // MARK: - Reviews & charts parsing
 
-    func testParseReviews() throws {
-        let reviews = ITunesRSSParser.reviews(try json(Fixture.reviewsRSS))
-        XCTAssertEqual(reviews.count, 2)
-        let r = reviews[0]
-        XCTAssertEqual(r.id, 14279148279)
-        XCTAssertEqual(r.author, "EvienneK.SEA")
-        XCTAssertEqual(r.rating, 5)
-        XCTAssertEqual(r.title, "The ADHD Tamer")
-        XCTAssertEqual(r.body, "This app reshaped my life.")
-        XCTAssertEqual(r.version, "3.22.9")
-        XCTAssertNotNil(r.updated)
-        XCTAssertEqual(reviews[1].rating, 2)
+    func testParseReviewsFromPageBlob() throws {
+        let blob = try jsonAny(Fixture.serializedPage)
+        let reviews = AppStoreReviewParser.reviews(in: blob)
+
+        XCTAssertEqual(reviews.count, 2, "the same review appears on several shelves and must be deduplicated")
+        let newest = reviews[0]
+        XCTAssertEqual(newest.id, 13539617732)
+        XCTAssertEqual(newest.author, "JJLin283")
+        XCTAssertEqual(newest.rating, 5)
+        XCTAssertEqual(newest.title, "Questionable security")
+        XCTAssertEqual(newest.body, "Someone hacked my account.")
+        XCTAssertNotNil(newest.date)
+        XCTAssertEqual(reviews[1].rating, 3, "results are newest first")
+    }
+
+    func testReviewIDsSurvivePastThirtyTwoBits() throws {
+        // Real IDs run to eleven digits; an Int32 would silently wrap.
+        let reviews = AppStoreReviewParser.reviews(in: try jsonAny(Fixture.serializedPage))
+        XCTAssertGreaterThan(try XCTUnwrap(reviews.first).id, Int(Int32.max))
+    }
+
+    func testDuplicateShelvesDoNotInflateTheCount() throws {
+        // The Instagram page carried 8 reviews and a naive walk reported 40.
+        let blob = try jsonAny(Fixture.serializedPage)
+        let ids = AppStoreReviewParser.reviews(in: blob).map(\.id)
+        XCTAssertEqual(ids.count, Set(ids).count)
+    }
+
+    func testNullPlaceholderAuthorBecomesNil() throws {
+        // Apple renders the literal string "* null *" for absent values.
+        let reviews = AppStoreReviewParser.reviews(in: try jsonAny(Fixture.serializedPage))
+        XCTAssertNil(reviews[1].author)
+    }
+
+    func testReviewSectionDetection() throws {
+        XCTAssertTrue(AppStoreReviewParser.hasReviewSection(in: try jsonAny(Fixture.serializedPage)))
+        XCTAssertFalse(AppStoreReviewParser.hasReviewSection(in: try jsonAny(#"{"shelves":[]}"#)))
+    }
+
+    func testExtractsBlobFromPageHTML() {
+        let html = """
+            <html><head><title>App</title></head><body>
+            <script type="application/json" id="serialized-server-data">[{"a":1}]</script>
+            </body></html>
+            """
+        let json = AppStorePage.extractSerializedData(from: html)
+        XCTAssertNotNil(json)
+        XCTAssertEqual((json as? [[String: Any]])?.first?["a"] as? Int, 1)
+    }
+
+    func testMissingBlobIsReportedRatherThanTreatedAsEmpty() {
+        // The retired RSS feed answered 200 with an empty envelope, which is
+        // exactly how this used to fail silently.
+        XCTAssertNil(AppStorePage.extractSerializedData(from: "<html><body>nothing</body></html>"))
     }
 
     func testParseCharts() throws {
@@ -185,18 +301,24 @@ final class ITunesMetadataTests: XCTestCase {
         XCTAssertEqual(entries[1].rank, 2)
     }
 
-    func testChartAndSortRawValues() {
+    func testChartRawValues() {
         XCTAssertEqual(ITunesChart.topFreeApps.rawValue, "topfreeapplications")
-        XCTAssertEqual(ITunesReviewSort.mostRecent.rawValue, "mostRecent")
+        XCTAssertEqual(ITunesChart.topGrossingApps.rawValue, "topgrossingapplications")
     }
 
     func testLiveReviewsAndCharts() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["ITUNES_LIVE_TESTS"] == "1",
                           "Set ITUNES_LIVE_TESTS=1 to run live network tests.")
-        // Things 3 reviews.
-        let reviews = try await ITunesMetadata.reviews(appID: 904237743, page: 1)
-        XCTAssertFalse(reviews.isEmpty)
+        // Instagram: large enough that an empty result means a broken source.
+        let reviews = try await ITunesMetadata.reviews(appID: 389801252)
+        XCTAssertFalse(reviews.isEmpty, "the page source has stopped yielding reviews")
+        XCTAssertLessThanOrEqual(reviews.count, 10, "the public page ships one shelf of ten")
         XCTAssertTrue(reviews.allSatisfy { (1...5).contains($0.rating) })
+        XCTAssertTrue(reviews.contains { !$0.body.isEmpty }, "review bodies must survive")
+
+        // Storefronts do not overlap — the only way to widen the net.
+        let gb = try await ITunesMetadata.reviews(appID: 389801252, country: "GB")
+        XCTAssertTrue(Set(reviews.map(\.id)).isDisjoint(with: gb.map(\.id)))
 
         let topApps = try await ITunesMetadata.charts(.topFreeApps, limit: 5)
         XCTAssertFalse(topApps.isEmpty)
@@ -211,6 +333,10 @@ final class ITunesMetadataTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    private func jsonAny(_ string: String) throws -> Any {
+        try JSONSerialization.jsonObject(with: Data(string.utf8), options: [.fragmentsAllowed])
+    }
 
     private func json(_ string: String) throws -> [String: Any] {
         try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(string.utf8)) as? [String: Any])
@@ -283,21 +409,61 @@ private enum Fixture {
       "description": "Notion is an AI-powered all-in-one workspace." }
     """
 
-    /// A customer-reviews RSS envelope (values wrapped as `{ "label": … }`).
-    static let reviewsRSS = """
-    { "feed": { "entry": [
-        { "id": { "label": "14279148279" },
-          "author": { "name": { "label": "EvienneK.SEA" } },
-          "im:rating": { "label": "5" }, "im:version": { "label": "3.22.9" },
-          "im:voteCount": { "label": "0" }, "im:voteSum": { "label": "0" },
-          "title": { "label": "The ADHD Tamer" },
-          "content": { "label": "This app reshaped my life.", "attributes": { "type": "text" } },
-          "updated": { "label": "2026-07-08T12:10:07-07:00" } },
-        { "id": { "label": "14279000000" },
-          "author": { "name": { "label": "someone" } },
-          "im:rating": { "label": "2" }, "title": { "label": "Meh" },
-          "content": { "label": "Too pricey." }, "updated": { "label": "2026-07-01T00:00:00-07:00" } }
-    ] } }
+    /// A Mac App Store lookup result: paid, unrated, string file size.
+    static let appLookup = """
+    { "wrapperType": "software", "kind": "mac-software",
+      "trackId": 904280696, "trackName": "Things 3",
+      "bundleId": "com.culturedcode.ThingsMac",
+      "sellerName": "Cultured Code GmbH & Co. KG",
+      "sellerUrl": "https://culturedcode.com/things/",
+      "artistViewUrl": "https://apps.apple.com/us/developer/cultured-code/id284971784",
+      "trackViewUrl": "https://apps.apple.com/us/app/things-3/id904280696",
+      "version": "3.22.13",
+      "currentVersionReleaseDate": "2026-08-03T12:59:25Z",
+      "releaseDate": "2017-05-18T16:42:04Z",
+      "releaseNotes": "• Improved stability and bug fixes.",
+      "averageUserRating": 0, "userRatingCount": 0,
+      "price": 49.99, "formattedPrice": "$49.99", "currency": "USD",
+      "primaryGenreName": "Productivity", "genres": ["Productivity", "Business"],
+      "contentAdvisoryRating": "4+",
+      "fileSizeBytes": "21889579",
+      "minimumOsVersion": "10.15.0",
+      "languageCodesISO2A": ["EN", "FR", "DE"],
+      "description": "Get things done!",
+      "artworkUrl512": "https://is1-ssl.mzstatic.com/512.png",
+      "screenshotUrls": ["https://is1-ssl.mzstatic.com/a.png", "https://is1-ssl.mzstatic.com/b.png"] }
+    """
+
+    /// An iOS listing: free, rated, float average.
+    static let ratedApp = """
+    { "wrapperType": "software", "kind": "software",
+      "trackId": 904237743, "trackName": "Things 3 for iPhone",
+      "averageUserRating": 4.82, "userRatingCount": 27792,
+      "price": 0, "formattedPrice": "Free", "currency": "USD",
+      "genres": ["Productivity"] }
+    """
+
+    /// An App Store page blob, trimmed to shape: two distinct reviews, one of
+    /// them repeated on a second shelf exactly as Apple's own page does.
+    static let serializedPage = """
+    [{
+      "data": { "shelves": [
+        { "$kind": "Shelf", "id": "allProductReviews", "contentType": "productReview", "items": [
+            { "$kind": "Review", "id": "13539617732", "rating": 5,
+              "title": "Questionable security", "reviewerName": "JJLin283",
+              "date": "2025-12-21T18:38:52.000Z", "dateText": "* null *",
+              "contents": "Someone hacked my account." },
+            { "$kind": "Review", "id": "5289482643", "rating": 3,
+              "title": "Some things to fix", "reviewerName": "* null *",
+              "date": "2019-03-29T10:00:00.000Z",
+              "contents": "Mostly good." } ] },
+        { "$kind": "Shelf", "id": "userProductReviews", "contentType": "productReview", "items": [
+            { "$kind": "Review", "id": "13539617732", "rating": 5,
+              "title": "Questionable security", "reviewerName": "JJLin283",
+              "date": "2025-12-21T18:38:52.000Z",
+              "contents": "Someone hacked my account." } ] }
+      ] }
+    }]
     """
 
     /// A top-charts RSS envelope (attributes under `{ "attributes": … }`).

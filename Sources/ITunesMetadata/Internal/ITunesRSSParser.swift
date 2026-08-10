@@ -7,30 +7,13 @@
 
 import Foundation
 
-/// Parses Apple's RSS-feed JSON (customer reviews and top charts), whose shape
+/// Parses Apple's top-charts RSS JSON, whose shape
 /// differs from the Search API — values are wrapped as `{ "label": … }` and
 /// attributes live under `{ "attributes": … }`.
+///
+/// Reviews used to be parsed here too. That feed is retired; see
+/// ``AppStoreReviewParser`` for where they come from now.
 enum ITunesRSSParser {
-
-    // MARK: - Reviews
-
-    static func reviews(_ json: [String: Any]) -> [ITunesReview] {
-        entries(in: json).compactMap { entry in
-            // Review entries carry `im:rating`; the occasional app-summary entry does not.
-            guard let ratingText = label(entry["im:rating"]), let rating = Int(ratingText) else { return nil }
-            return ITunesReview(
-                id: Int(label(entry["id"]) ?? "") ?? 0,
-                author: label(dict(entry["author"])?["name"]),
-                rating: rating,
-                title: label(entry["title"]) ?? "",
-                body: label(entry["content"]) ?? "",
-                version: label(entry["im:version"]),
-                voteCount: Int(label(entry["im:voteCount"]) ?? ""),
-                voteSum: Int(label(entry["im:voteSum"]) ?? ""),
-                updated: date(label(entry["updated"]))
-            )
-        }
-    }
 
     // MARK: - Charts
 
